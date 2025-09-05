@@ -1,9 +1,9 @@
-import { ZodObject } from 'zod';
-import { FILTER_COLUMNS } from '@/lib/constants';
+import { z, ZodSchema } from 'zod';
+import { FILTER_COLUMNS, FILTER_GROUPS } from '@/lib/constants';
 import { badRequest, unauthorized } from '@/lib/response';
 import { getAllowedUnits, getMinimumUnit } from '@/lib/date';
 import { checkAuth } from '@/lib/auth';
-import { getWebsiteDateRange } from '@/queries';
+import { getWebsiteSegment, getWebsiteDateRange } from '@/queries';
 
 export async function getJsonBody(request: Request) {
   try {
@@ -15,7 +15,7 @@ export async function getJsonBody(request: Request) {
 
 export async function parseRequest(
   request: Request,
-  schema?: ZodObject<any>,
+  schema?: ZodSchema,
   options?: { skipAuth: boolean },
 ): Promise<any> {
   const url = new URL(request.url);
@@ -24,12 +24,21 @@ export async function parseRequest(
   let error: () => void | undefined;
   let auth = null;
 
+  const getErrorMessages = (error: z.ZodError) => {
+    return Object.entries(error.format())
+      .map(([key, value]) => {
+        const messages = (value as any)._errors;
+        return messages ? `${key}: ${messages.join(', ')}` : null;
+      })
+      .filter(Boolean);
+  };
+
   if (schema) {
     const isGet = request.method === 'GET';
     const result = schema.safeParse(isGet ? query : body);
 
     if (!result.success) {
-      error = () => badRequest(result.error);
+      error = () => badRequest(getErrorMessages(result.error));
     } else if (isGet) {
       query = result.data;
     } else {
@@ -76,14 +85,28 @@ export async function getRequestDateRange(query: Record<string, any>) {
   };
 }
 
-export function getRequestFilters(query: Record<string, any>) {
-  return Object.keys(FILTER_COLUMNS).reduce((obj, key) => {
+export async function getRequestFilters(query: Record<string, any>, websiteId?: string) {
+  const result: Record<string, any> = {};
+
+  for (const key of Object.keys(FILTER_COLUMNS)) {
     const value = query[key];
-
     if (value !== undefined) {
-      obj[key] = value;
+      result[key] = value;
     }
+  }
 
-    return obj;
-  }, {});
+  for (const key of Object.keys(FILTER_GROUPS)) {
+    const value = query[key];
+    if (value !== undefined) {
+      const segment = await getWebsiteSegment(websiteId, key, value);
+      if (key === 'segment') {
+        // merge filters into result
+        Object.assign(result, segment.parameters);
+      } else {
+        result[key] = segment.parameters;
+      }
+    }
+  }
+
+  return result;
 }
